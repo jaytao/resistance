@@ -14,6 +14,9 @@ type Game struct {
 	Rounds  map[int]bool
 	Round   int
 	Pool    *websocket.Pool
+	Captain int
+	Mission []*Player
+	Votes   map[*Player]bool
 }
 
 func (game *Game) Run() {
@@ -29,8 +32,8 @@ func (game *Game) Run() {
 			}
 			msg, ok := game.AddPlayer(player)
 			if !ok {
-				log.Print("Failed to add player: %s", msg)
-				client.Conn.WriteJSON(websocket.Message{Msg: "Can't join. Game already started"})
+				log.Printf("Failed to add player: %s", msg)
+				client.Conn.WriteJSON(websocket.Message{Msg: fmt.Sprintf("Can't join. %s", msg)})
 				break
 			}
 			for poolClient, _ := range game.Pool.Clients {
@@ -58,7 +61,7 @@ func (game *Game) Run() {
 			log.Printf("Action recieved %s from %s", action.Action, action.Client.ID)
 			_split := strings.Split(action.Action, " ")
 			if _split[0] == "start" {
-				game.Start()
+				go game.Start()
 			}
 			break
 		}
@@ -74,6 +77,11 @@ func NewGame(pool *websocket.Pool) Game {
 }
 func (game *Game) AddPlayer(player Player) (string, bool) {
 	if game.Round == 0 {
+		for _, existingPlayer := range game.Players {
+			if player.ID == existingPlayer.Name {
+				return "Player with name already exists", false
+			}
+		}
 		game.Players = append(game.Players, player)
 		return "Added", true
 	}
@@ -100,9 +108,48 @@ func (game *Game) Start() bool {
 		}
 	}
 	shuffle(roles)
+
+	// separate the player types into their own arrays for ease
+	roles_map := map[Role][]*Player{}
+
+	spys := []string{}
 	for idx, player := range game.Players {
 		player.Role = roles[idx]
+		if arr, ok := roles_map[player.Role]; ok {
+			arr = append(arr, &player)
+		} else {
+			roles_map[player.Role] = []*Player{&player}
+		}
 		player.Client.Conn.WriteJSON(websocket.Message{Msg: fmt.Sprintf("You are %s", roles[idx])})
+		if player.Role == Spy {
+			spys = append(spys, player.Name)
+		}
 	}
+
+	for _, player := range roles_map[Spy] {
+		player.Client.Conn.WriteJSON(websocket.Message{Msg: fmt.Sprintf("Other spys: %v", spys)})
+	}
+
+	game.Captain = rand.Intn(len(game.Players))
+	game.Pool.Broadcast <- websocket.Message{Msg: fmt.Sprintf("Current captain is %s. Choose a team", game.Players[game.Captain].Name)}
 	return true
+}
+
+func (game Game) debug() {
+	log.Printf("Current Round: %d", game.Round)
+	for r, pass := range game.Rounds {
+		log.Printf("Round: %d, Pass: %v", r, pass)
+	}
+
+	log.Printf("Players:")
+	for idx, player := range game.Players {
+		log.Printf("idx: %d, name: %s, role: %s", idx, player.Name, player.Role)
+	}
+	log.Printf("Captain: %s", game.Players[game.Captain].Name)
+	if game.Votes != nil {
+		log.Printf("Current votes")
+		for player, vote := range game.Votes {
+			log.Printf("Player: %s, Vote: %v", player.Name, vote)
+		}
+	}
 }
